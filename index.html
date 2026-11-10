@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UNEED - 碳管理后台</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#2563EB',
+            'primary-light': '#3B82F6',
+            'primary-dark': '#1D4ED8',
+            success: '#10B981',
+            warning: '#F59E0B',
+            danger: '#EF4444',
+            border: '#E5E7EB',
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: #F3F4F6; color: #111827; }
+    .font-mono-num { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+    .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #D1D5DB; border-radius: 2px; }
+    .fade-in { animation: fadeIn 0.2s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    .toast-enter { animation: toastIn 0.3s ease-out; }
+    @keyframes toastIn { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
+    .sidebar-item { transition: all 0.15s ease; }
+    .sidebar-item:hover { background: rgba(255,255,255,0.08); }
+    .sidebar-item.active { background: rgba(255,255,255,0.12); border-right: 3px solid #60A5FA; }
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    input[type="number"] { -moz-appearance: textfield; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script>
+    const { useState, useEffect, useMemo } = React;
+    const html = htm.bind(React.createElement);
+
+    // ==================== Mock Data ====================
+    const DEFAULT_FACTOR = 0.74;
+
+    const buildings = [
+      { id: 'b1', name: '1号楼' },
+      { id: 'b2', name: '2号楼' },
+      { id: 'b3', name: '3号楼' },
+    ];
+
+    function generateEmissionRecords() {
+      const records = [];
+      const now = new Date('2026-11-09');
+      for (let i = 0; i < 35; i++) {
+        const d = new Date(now);
+        d.setDate(d.getDate() - i);
+        const dateStr = d.toISOString().split('T')[0];
+        buildings.forEach((b, idx) => {
+          const scope1 = Math.round(500 + Math.random() * 300);
+          const scope3 = Math.round(800 + Math.random() * 600);
+          const hour = String(8 + (idx % 10)).padStart(2, '0');
+          const minute = String((i * 7 + idx * 13) % 60).padStart(2, '0');
+          records.push({
+            id: `rec-${dateStr}-${b.id}-${idx}`,
+            date: dateStr,
+            building: b.id,
+            buildingName: b.name,
+            scope1,
+            scope3,
+            factor: DEFAULT_FACTOR,
+            total: +((scope1 + scope3) * DEFAULT_FACTOR).toFixed(1),
+            operator: i < 3 ? 'Admin' : 'Zhang Wei',
+            createdAt: `${dateStr} ${hour}:${minute}`,
+          });
+        });
+      }
+      return records.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    }
+
+    const mockRecords = generateEmissionRecords();
+
+    const mockFactorHistory = [
+      { id: 1, value: 0.74, previousValue: 0.72, reason: '马来西亚电网 2024 年度因子更新', operator: 'Admin', effectiveDate: '2024-01-01', createdAt: '2024-01-01 09:00' },
+      { id: 2, value: 0.72, previousValue: 0.70, reason: 'TNB 排放因子年度调整', operator: 'Admin', effectiveDate: '2023-01-01', createdAt: '2023-01-01 10:30' },
+      { id: 3, value: 0.70, previousValue: null, reason: '初始设定值', operator: 'System', effectiveDate: '2022-06-01', createdAt: '2022-06-01 08:00' },
+    ];
+
+    // ==================== Shared Components ====================
+    function Toast({ message, visible, onClose }) {
+      useEffect(() => {
+        if (visible) {
+          const t = setTimeout(onClose, 3000);
+          return () => clearTimeout(t);
+        }
+      }, [visible, onClose]);
+      if (!visible) return null;
+      return html`
+        <div class="fixed top-6 right-6 z-[9999] toast-enter">
+          <div class="bg-white border border-success text-success rounded-lg shadow-lg px-5 py-3 flex items-center gap-3">
+            <span class="text-sm font-medium text-gray-800">${message}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    function ConfirmDialog({ open, title, message, onConfirm, onCancel, danger = false }) {
+      if (!open) return null;
+      return html`
+        <div class="fixed inset-0 z-[9998] flex items-center justify-center bg-black/30 fade-in" onClick=${onCancel}>
+          <div class="bg-white rounded-xl shadow-2xl border border-border p-6 w-[400px] fade-in" onClick=${e => e.stopPropagation()}>
+            <h3 class="text-lg font-semibold text-gray-900 mb-2">${title}</h3>
+            <p class="text-sm text-gray-600 mb-6">${message}</p>
+            <div class="flex justify-end gap-3">
+              <button onClick=${onCancel} class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition">取消</button>
+              <button onClick=${onConfirm} class="px-4 py-2 text-sm font-medium text-white ${danger ? 'bg-danger hover:bg-red-600' : 'bg-primary hover:bg-primary-dark'} rounded-lg transition">确认</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function Modal({ open, onClose, title, children, width = 'max-w-4xl' }) {
+      if (!open) return null;
+      return html`
+        <div class="fixed inset-0 z-[9990] flex items-center justify-center bg-black/40 fade-in" onClick=${onClose}>
+          <div class="bg-white rounded-2xl shadow-2xl border border-border ${width} w-full max-h-[85vh] flex flex-col fade-in mx-4" onClick=${e => e.stopPropagation()}>
+            <div class="flex items-center justify-between px-6 py-4 border-b border-border">
+              <h2 class="text-lg font-semibold text-gray-900">${title}</h2>
+              <button onClick=${onClose} class="p-1.5 rounded-lg hover:bg-gray-100 transition">
+                <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+            </div>
+            <div class="flex-1 overflow-auto p-6 scrollbar-thin">${children}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function Btn({ children, onClick, variant = 'default', size = 'sm', icon, disabled, className = '' }) {
+      const sizes = { sm: 'px-3 py-1.5 text-xs', md: 'px-4 py-2 text-sm' };
+      const variants = { default: 'bg-gray-50 text-gray-700 border border-border hover:bg-gray-100', primary: 'bg-primary text-white hover:bg-primary-dark', ghost: 'text-gray-600 hover:bg-gray-100', danger: 'bg-danger/10 text-danger border border-danger/20 hover:bg-danger/20' };
+      return html`
+        <button class="inline-flex items-center gap-1.5 font-medium rounded-lg transition focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50 ${sizes[size]} ${variants[variant]} ${className}" onClick=${onClick} disabled=${disabled}>
+          ${icon}${children}
+        </button>
+      `;
+    }
+
+    function Badge({ children }) {
+      return html`<span class="px-2 py-0.5 text-xs font-medium rounded bg-primary/10 text-primary">${children}</span>`;
+    }
+
+    // ==================== Sidebar ====================
+    function Sidebar({ activeMenu, onMenuChange }) {
+      const menus = [
+        { id: 'entry', label: '碳排量录入' },
+        { id: 'factor', label: '碳排因子设定' },
+      ];
+
+      return html`
+        <aside class="w-56 bg-[#1E293B] text-white flex flex-col shrink-0">
+          <div class="h-14 flex items-center px-5 border-b border-white/10">
+            <span class="text-sm font-bold tracking-tight">UNEED 碳管理后台</span>
+          </div>
+          <div class="px-3 py-4 space-y-1">
+            <div class="text-[10px] uppercase tracking-wider text-gray-500 font-semibold px-3 mb-2">系统菜单</div>
+            ${menus.map(m => html`
+              <button key=${m.id} onClick=${() => onMenuChange(m.id)} class="sidebar-item w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm ${activeMenu === m.id ? 'active text-white font-medium' : 'text-gray-400'}">
+                ${m.label}
+              </button>
+            `)}
+          </div>
+        </aside>
+      `;
+    }
+
+    // ==================== Top Bar ====================
+    function TopBar({ title, subtitle }) {
+      return html`
+        <div class="bg-white border-b border-border px-6 py-4 flex items-center justify-between shrink-0">
+          <div>
+            <h1 class="text-lg font-semibold text-gray-900">${title}</h1>
+            <p class="text-xs text-gray-500 mt-0.5">${subtitle}</p>
+          </div>
+          <div class="flex items-center gap-1.5 text-xs text-gray-500">
+            <div class="w-2 h-2 rounded-full bg-success"></div>系统正常
+          </div>
+        </div>
+      `;
+    }
+
+    // ==================== Emission Entry Page ====================
+    function EmissionEntryPage() {
+      const [records, setRecords] = useState(mockRecords);
+      const [showForm, setShowForm] = useState(false);
+      const [toastMsg, setToastMsg] = useState('');
+      
+      const [formDate, setFormDate] = useState('2026-11-09');
+      const [formBuilding, setFormBuilding] = useState('b1');
+      const [formScope1, setFormScope1] = useState('');
+      const [formScope3, setFormScope3] = useState('');
+
+      const [inputBuilding, setInputBuilding] = useState('all');
+      const [inputDate, setInputDate] = useState('');
+      const [appliedBuilding, setAppliedBuilding] = useState('all');
+      const [appliedDate, setAppliedDate] = useState('');
+
+      const [currentPage, setCurrentPage] = useState(1);
+      const pageSize = 10;
+
+      const filteredRecords = useMemo(() => {
+        const list = records.filter(item => {
+          const matchBuilding = appliedBuilding === 'all' || item.building === appliedBuilding;
+          const matchDate = !appliedDate || item.date === appliedDate;
+          return matchBuilding && matchDate;
+        });
+        return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      }, [records, appliedBuilding, appliedDate]);
+
+      const totalPages = Math.ceil(filteredRecords.length / pageSize) || 1;
+      const paginatedData = useMemo(() => {
+        const start = (currentPage - 1) * pageSize;
+        return filteredRecords.slice(start, start + pageSize);
+      }, [filteredRecords, currentPage]);
+
+      const handleSearch = () => {
+        setAppliedBuilding(inputBuilding);
+        setAppliedDate(inputDate);
+        setCurrentPage(1);
+      };
+
+      const handleResetFilter = () => {
+        setInputBuilding('all');
+        setInputDate('');
+        setAppliedBuilding('all');
+        setAppliedDate('');
+        setCurrentPage(1);
+      };
+
+      const handleSubmit = () => {
+        const scope1 = parseFloat(formScope1);
+        const scope3 = parseFloat(formScope3);
+        if (isNaN(scope1) || isNaN(scope3)) {
+          setToastMsg('请填写完整的 Scope1 及 Scope3 数据');
+          return;
+        }
+        const b = buildings.find(x => x.id === formBuilding);
+        const nowTime = new Date();
+        const formattedTime = nowTime.getFullYear() + '-' + 
+          String(nowTime.getMonth() + 1).padStart(2, '0') + '-' + 
+          String(nowTime.getDate()).padStart(2, '0') + ' ' + 
+          String(nowTime.getHours()).padStart(2, '0') + ':' + 
+          String(nowTime.getMinutes()).padStart(2, '0');
+
+        const newRec = {
+          id: `rec-${Date.now()}`,
+          date: formDate,
+          building: formBuilding,
+          buildingName: b ? b.name : '1号楼',
+          scope1: Math.round(scope1),
+          scope3: Math.round(scope3),
+          factor: DEFAULT_FACTOR,
+          total: +((scope1 + scope3) * DEFAULT_FACTOR).toFixed(1),
+          operator: 'Admin',
+          createdAt: formattedTime,
+        };
+        setRecords(prev => [newRec, ...prev].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+        setShowForm(false);
+        setFormScope1('');
+        setFormScope3('');
+        setCurrentPage(1);
+        setToastMsg('录入成功');
+      };
+
+      return html`
+        <div class="flex-1 flex flex-col min-w-0">
+          <${TopBar} title="碳排量录入" subtitle="手动录入各楼栋 Scope 1 / Scope 3 碳排放数据" />
+          <div class="flex-1 overflow-auto p-6 scrollbar-thin flex flex-col">
+            <div class="bg-white rounded-xl border border-border p-4 mb-4 flex items-center justify-between flex-wrap gap-3">
+              <div class="flex items-center gap-3 flex-wrap">
+                <div class="flex items-center gap-1.5 text-xs text-gray-600">
+                  <span>楼栋：</span>
+                  <select value=${inputBuilding} onChange=${e => setInputBuilding(e.target.value)} class="px-2.5 py-1.5 text-xs border border-border rounded-lg bg-white outline-none">
+                    <option value="all">全部楼栋</option>
+                    ${buildings.map(b => html`<option key=${b.id} value=${b.id}>${b.name}</option>`)}
+                  </select>
+                </div>
+                <div class="flex items-center gap-1.5 text-xs text-gray-600">
+                  <span>业务日期：</span>
+                  <input type="date" value=${inputDate} onChange=${e => setInputDate(e.target.value)} class="px-2.5 py-1.5 text-xs border border-border rounded-lg outline-none" />
+                </div>
+                <div class="flex items-center gap-2">
+                  <${Btn} variant="primary" onClick=${handleSearch}>搜索</${Btn}>
+                  <button onClick=${handleResetFilter} class="px-3 py-1.5 text-xs text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition">重置</button>
+                </div>
+              </div>
+              <${Btn} variant="primary" onClick=${() => setShowForm(true)}>新增录入</${Btn}>
+            </div>
+
+            <div class="bg-white rounded-xl border border-border overflow-hidden flex-1 flex flex-col">
+              <div class="overflow-auto flex-1">
+                <table class="w-full text-sm">
+                  <thead class="bg-gray-50 border-b border-border sticky top-0">
+                    <tr>
+                      <th class="px-4 py-3 text-left text-xs font-medium text-gray-500">业务日期</th>
+                      <th class="px-4 py-3 text-left text-xs font-medium text-gray-500">楼栋</th>
+                      <th class="px-4 py-3 text-right text-xs font-medium text-gray-500">Scope 1 (kg CO₂e)</th>
+                      <th class="px-4 py-3 text-right text-xs font-medium text-gray-500">Scope 3 (kg CO₂e)</th>
+                      <th class="px-4 py-3 text-right text-xs font-medium text-gray-500">总排放 (kg CO₂e)</th>
+                      <th class="px-4 py-3 text-left text-xs font-medium text-gray-500">操作人</th>
+                      <th class="px-4 py-3 text-left text-xs font-medium text-gray-500">操作时间</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-border">
+                    ${paginatedData.length > 0 ? paginatedData.map(row => html`
+                      <tr key=${row.id} class="hover:bg-gray-50">
+                        <td class="px-4 py-3 text-xs font-mono-num text-gray-700">${row.date}</td>
+                        <td class="px-4 py-3"><${Badge}>${row.buildingName}</${Badge}></td>
+                        <td class="px-4 py-3 text-xs font-mono-num text-right">${row.scope1.toLocaleString()}</td>
+                        <td class="px-4 py-3 text-xs font-mono-num text-right">${row.scope3.toLocaleString()}</td>
+                        <td class="px-4 py-3 text-xs font-mono-num text-right font-semibold text-gray-900">${row.total.toLocaleString()}</td>
+                        <td class="px-4 py-3 text-xs text-gray-600">${row.operator}</td>
+                        <td class="px-4 py-3 text-xs font-mono-num text-gray-500">${row.createdAt}</td>
+                      </tr>
+                    `) : html`
+                      <tr>
+                        <td colSpan="7" class="px-4 py-12 text-center text-xs text-gray-400">暂无符合条件的碳排记录</td>
+                      </tr>
+                    `}
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="flex items-center justify-between px-4 py-3 border-t border-border bg-gray-50 shrink-0">
+                <div class="flex items-center gap-1">
+                  <button onClick=${() => setCurrentPage(prev => Math.max(prev - 1, 1))} disabled=${currentPage === 1} class="px-3 py-1 text-xs bg-white border border-border rounded-md hover:bg-gray-100 disabled:opacity-40">上一页</button>
+                  <span class="text-xs text-gray-600 px-2 font-mono-num">第 ${currentPage} / ${totalPages} 页</span>
+                  <button onClick=${() => setCurrentPage(prev => Math.min(prev + 1, totalPages))} disabled=${currentPage === totalPages} class="px-3 py-1 text-xs bg-white border border-border rounded-md hover:bg-gray-100 disabled:opacity-40">下一页</button>
+                </div>
+                <div class="text-xs text-gray-500">
+                  每页显示 <span class="font-mono-num font-medium text-gray-700">10</span> 条，共 <span class="font-mono-num font-semibold text-primary">${filteredRecords.length}</span> 条记录
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <${Modal} open=${showForm} onClose=${() => setShowForm(false)} title="新增碳排放录入" width="max-w-lg">
+            <div class="space-y-4">
+              <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">业务日期</label>
+                <input type="date" value=${formDate} onChange=${e => setFormDate(e.target.value)} class="w-full px-3 py-2 text-sm border border-border rounded-lg outline-none" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">楼栋</label>
+                <select value=${formBuilding} onChange=${e => setFormBuilding(e.target.value)} class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-white outline-none">
+                  ${buildings.map(b => html`<option key=${b.id} value=${b.id}>${b.name}</option>`)}
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Scope 1 - 直接排放 (kg CO₂e)</label>
+                <input type="number" placeholder="请输入数值" value=${formScope1} onChange=${e => setFormScope1(e.target.value)} class="w-full px-3 py-2 text-sm border border-border rounded-lg outline-none font-mono-num" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Scope 3 - 其他间接排放 (kg CO₂e)</label>
+                <input type="number" placeholder="请输入数值" value=${formScope3} onChange=${e => setFormScope3(e.target.value)} class="w-full px-3 py-2 text-sm border border-border rounded-lg outline-none font-mono-num" />
+              </div>
+            </div>
+            <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-border">
+              <${Btn} onClick=${() => setShowForm(false)}>取消</${Btn}>
+              <${Btn} variant="primary" onClick=${handleSubmit}>确认录入</${Btn}>
+            </div>
+          <//>
+
+          <${Toast} message=${toastMsg} visible=${!!toastMsg} onClose=${() => setToastMsg('')} />
+        </div>
+      `;
+    }
+
+    // ==================== Factor Settings Page (Fully Robust) ====================
+    function FactorSettingsPage() {
+      const [currentFactor, setCurrentFactor] = useState(DEFAULT_FACTOR);
+      const [factorHistory, setFactorHistory] = useState(() => {
+        return [...mockFactorHistory].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      });
+      const [showEdit, setShowEdit] = useState(false);
+      const [showHistory, setShowHistory] = useState(false);
+      const [newFactor, setNewFactor] = useState('');
+      const [newReason, setNewReason] = useState('');
+      const [newEffectiveDate, setNewEffectiveDate] = useState('');
+      const [toastMsg, setToastMsg] = useState('');
+      const [confirmOpen, setConfirmOpen] = useState(false);
+
+      const handleSave = () => {
+        const val = parseFloat(newFactor);
+        if (isNaN(val) || val <= 0 || val > 5) {
+          setToastMsg('请输入有效的排放因子 (0 < x ≤ 5)');
+          return;
+        }
+        if (!newReason.trim() || !newEffectiveDate) {
+          setToastMsg('请填写完整的变更原因与生效日期');
+          return;
+        }
+        const nowTime = new Date();
+        const formattedTime = nowTime.getFullYear() + '-' + 
+          String(nowTime.getMonth() + 1).padStart(2, '0') + '-' + 
+          String(nowTime.getDate()).padStart(2, '0') + ' ' + 
+          String(nowTime.getHours()).padStart(2, '0') + ':' + 
+          String(nowTime.getMinutes()).padStart(2, '0');
+
+        const newEntry = {
+          id: factorHistory.length + 1,
+          value: val,
+          previousValue: currentFactor,
+          reason: newReason.trim(),
+          operator: 'Admin',
+          effectiveDate: newEffectiveDate,
+          createdAt: formattedTime,
+        };
+        setFactorHistory(prev => [newEntry, ...prev].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+        setCurrentFactor(val);
+        setShowEdit(false);
+        setNewFactor('');
+        setNewReason('');
+        setNewEffectiveDate('');
+        setToastMsg('排放因子修改成功');
+      };
+
+      const handleReset = () => {
+        setCurrentFactor(DEFAULT_FACTOR);
+        const nowTime = new Date();
+        const formattedTime = nowTime.getFullYear() + '-' + 
+          String(nowTime.getMonth() + 1).padStart(2, '0') + '-' + 
+          String(nowTime.getDate()).padStart(2, '0') + ' ' + 
+          String(nowTime.getHours()).padStart(2, '0') + ':' + 
+          String(nowTime.getMinutes()).padStart(2, '0');
+
+        const resetEntry = {
+          id: factorHistory.length + 1,
+          value: DEFAULT_FACTOR,
+          previousValue: currentFactor,
+          reason: '管理员手动重置为默认值',
+          operator: 'Admin',
+          effectiveDate: new Date().toISOString().split('T')[0],
+          createdAt: formattedTime,
+        };
+        setFactorHistory(prev => [resetEntry, ...prev].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+        setConfirmOpen(false);
+        setToastMsg('已成功重置为默认值');
+      };
+
+      return html`
+        <div class="flex-1 flex flex-col min-w-0">
+          <${TopBar} title="碳排因子设定" subtitle="管理电网碳排放因子，支持历史版本追溯" />
+          <div class="flex-1 overflow-auto p-6 scrollbar-thin">
+            <div class="bg-white rounded-xl border border-border p-6 mb-6">
+              <div class="flex items-center justify-between mb-6">
+                <div>
+                  <h2 class="text-base font-semibold text-gray-900">当前排放因子</h2>
+                  <p class="text-xs text-gray-500 mt-0.5">适用于吉隆坡数据中心 · 半岛马来西亚电网</p>
+                </div>
+                <div class="flex gap-2">
+                  <${Btn} onClick=${() => setShowEdit(true)} variant="primary">修改因子</${Btn}>
+                  <${Btn} onClick=${() => setConfirmOpen(true)} variant="danger">重置默认</${Btn}>
+                </div>
+              </div>
+              <div class="flex items-baseline gap-2">
+                <span class="text-5xl font-bold font-mono-num text-primary">${currentFactor}</span>
+                <span class="text-sm text-gray-500">kg CO₂e/kWh</span>
+              </div>
+            </div>
+
+            <div class="bg-white rounded-xl border border-border overflow-hidden">
+              <div class="flex items-center justify-between px-5 py-3.5 border-b border-border">
+                <h3 class="text-sm font-semibold text-gray-900">因子变更历史（按操作时间倒序）</h3>
+                <${Btn} variant="ghost" onClick=${() => setShowHistory(true)}>查看完整时间轴</${Btn}>
+              </div>
+              <table class="w-full text-sm">
+                <thead class="bg-gray-50 border-b border-border">
+                  <tr>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500">版本</th>
+                    <th class="px-4 py-3 text-right text-xs font-medium text-gray-500">因子值</th>
+                    <th class="px-4 py-3 text-right text-xs font-medium text-gray-500">变更前</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500">生效日期</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500">变更原因</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500">操作人</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500">操作时间</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-border">
+                  ${factorHistory.map((row, i) => html`
+                    <tr key=${row.id} class="hover:bg-gray-50 ${i === 0 ? 'bg-blue-50/20' : ''}">
+                      <td class="px-4 py-3 text-xs font-mono-num text-gray-700">v${row.id}</td>
+                      <td class="px-4 py-3 text-xs font-mono-num text-right font-semibold ${i === 0 ? 'text-primary' : 'text-gray-900'}">${row.value}</td>
+                      <td class="px-4 py-3 text-xs font-mono-num text-right text-gray-500">${row.previousValue !== null && row.previousValue !== undefined ? row.previousValue : '-'}</td>
+                      <td class="px-4 py-3 text-xs font-mono-num text-gray-700">${row.effectiveDate}</td>
+                      <td class="px-4 py-3 text-xs text-gray-600">${row.reason}</td>
+                      <td class="px-4 py-3"><span class="px-2 py-0.5 text-xs font-medium rounded ${row.operator === 'System' ? 'bg-gray-100 text-gray-600' : 'bg-primary/10 text-primary'}">${row.operator}</span></td>
+                      <td class="px-4 py-3 text-xs font-mono-num text-gray-500">${row.createdAt}</td>
+                    </tr>
+                  `)}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <${Modal} open=${showEdit} onClose=${() => setShowEdit(false)} title="修改排放因子" width="max-w-lg">
+            <div class="space-y-4">
+              <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">新因子值 (kg CO₂e/kWh)</label>
+                <input type="number" step="0.001" placeholder="例如：0.740" value=${newFactor} onChange=${e => setNewFactor(e.target.value)} class="w-full px-3 py-2 text-sm border border-border rounded-lg outline-none font-mono-num" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">生效日期</label>
+                <input type="date" value=${newEffectiveDate} onChange=${e => setNewEffectiveDate(e.target.value)} class="w-full px-3 py-2 text-sm border border-border rounded-lg outline-none" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">变更原因</label>
+                <textarea rows="3" placeholder="请说明变更原因..." value=${newReason} onChange=${e => setNewReason(e.target.value)} class="w-full px-3 py-2 text-sm border border-border rounded-lg outline-none resize-none"></textarea>
+              </div>
+            </div>
+            <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-border">
+              <${Btn} onClick=${() => setShowEdit(false)}>取消</${Btn}>
+              <${Btn} variant="primary" onClick=${handleSave}>确认修改</${Btn}>
+            </div>
+          <//>
+
+          <${Modal} open=${showHistory} onClose=${() => setShowHistory(false)} title="因子变更完整历史时间轴" width="max-w-2xl">
+            <div class="space-y-4">
+              ${factorHistory.map((row, i) => html`
+                <div key=${row.id} class="p-4 rounded-lg bg-gray-50 border border-border">
+                  <div class="flex justify-between items-center mb-1">
+                    <span class="font-mono-num font-semibold text-primary">${row.value} kg CO₂e/kWh ${i === 0 ? '(当前最新)' : ''}</span>
+                    <span class="text-xs text-gray-500 font-mono-num">生效日期：${row.effectiveDate}</span>
+                  </div>
+                  <p class="text-xs text-gray-600 mb-2">${row.reason}</p>
+                  <div class="text-[10px] text-gray-400">操作人：${row.operator} | 操作时间：${row.createdAt}</div>
+                </div>
+              `)}
+            </div>
+          <//>
+
+          <${ConfirmDialog} open=${confirmOpen} title="确认重置" message="确定要将排放因子重置为默认值吗？" onConfirm=${handleReset} onCancel=${() => setConfirmOpen(false)} danger=${true} />
+          <${Toast} message=${toastMsg} visible=${!!toastMsg} onClose=${() => setToastMsg('')} />
+        </div>
+      `;
+    }
+
+    // ==================== Main App ====================
+    function App() {
+      const [activeMenu, setActiveMenu] = useState('entry');
+
+      return html`
+        <div class="h-screen flex bg-[#F3F4F6]">
+          <${Sidebar} activeMenu=${activeMenu} onMenuChange=${setActiveMenu} />
+          ${activeMenu === 'entry' ? html`<${EmissionEntryPage} />` : html`<${FactorSettingsPage} />`}
+        </div>
+      `;
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(html`<${App} />`);
+  </script>
+</body>
+</html>
